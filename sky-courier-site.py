@@ -548,12 +548,12 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
             folium.Marker(
                 [point["lat"], point["lng"]],
                 tooltip=f"""
-                推荐点#{idx},
-                "lat": {point["lat"]:.8f},
-                "lng": {point["lng"]:.8f},
-                "score":{point['score']:.6f},
-                "kde_score"：{point['kde_score']:.6f},
-                "avg_distance":{point['avg_distance']:.6f},
+                <b>推荐点#{idx},<b><br>
+                "lat": {point["lat"]:.8f},<br>
+                "lng": {point["lng"]:.8f},<br>
+                "score":{point['score']:.6f},<br>
+                "kde_score"：{point['kde_score']:.6f},<br>
+                "avg_distance":{point['avg_distance']:.6f},<br>
                 "weighted_coverage":{point['weighted_coverage']:.6f},
                 """,
                 icon=folium.Icon(color='red', icon='cloud')
