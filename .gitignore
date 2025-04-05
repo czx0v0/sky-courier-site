@@ -5,7 +5,22 @@ __pycache__/
 
 # C extensions
 *.so
+# Streamlit 相关
+.streamlit/
+secrets.toml
 
+# IntelliJ IDEA 特定文件
+.idea/
+*.iml
+*.iws
+*.ipr
+*.ids
+*.orig
+*.xml
+
+# 生成的目录和文件
+out/
+gen/
 # Distribution / packaging
 .Python
 build/
