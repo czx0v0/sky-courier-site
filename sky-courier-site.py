@@ -293,9 +293,6 @@ if st.session_state.selected_point and st.button("获取周边POI数据"):
         })
 
     st.session_state.poi_data = pd.DataFrame(processed_data)
-    # location = f"{st.session_state.selected_point['lng']},{st.session_state.selected_point['lat']}"
-    # radius = float(st.session_state.analysis_area.get("radius", 15.0)) * 1000  # 转换为米
-    # safe_fetch_poi(st.secrets["AMAP_KEY"], location, radius, list(POI_TYPES.values()) )
 
 
 # 显示POI数据
@@ -349,9 +346,9 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
 
             # 构造prompt
             prompt = f"""
-            你是一个专业的无人机机场选址评估AI顾问，请根据以下数据提供分析报告：
+            你是一个专业的外卖无人机机场选址评估AI顾问，请根据以下数据提供分析报告：
 
-            - 中心点坐标: {st.session_state.selected_point['lat']:.6f}, {st.session_state.selected_point['lng']:.6f}
+            - 中心点坐标: ({st.session_state.selected_point['lat']:.6f}, {st.session_state.selected_point['lng']:.6f})
             - 分析半径: 15公里
             - POI总数: {poi_stats['total_pois']}
             - 平均距离: {poi_stats['avg_distance']:.2f}米
@@ -367,6 +364,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 5. 电力水平
                 6. 运营时间段
             格式要求使用Markdown满足程度
+            注意坐标要匹配"(\d+\.\d+),\s*(\d+\.\d+)"正则表达式格式。
             """
             # 在调用DeepSeek API前添加评分计算
             if st.session_state.poi_data is not None:
@@ -408,13 +406,14 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
 
                 # 提取坐标并计算评分
                 coord_matches = re.findall(r"(\d+\.\d+),\s*(\d+\.\d+)", analysis_text)
-                recommended_points = [{"lat": float(lat), "lng": float(lng)} for lng, lat in coord_matches[:3]]
+                st.write("提取到的坐标匹配:", coord_matches)  # 调试用
+                recommended_points = [{"lat": float(lat), "lng": float(lng)} for lat,lng  in coord_matches[:3]]
 
                 # 保存结果
                 st.session_state.analysis_result = {
                     "text": analysis_text,
                     "recommendations": recommended_points,
-                    "score":score_result
+                    "score": score_result
                 }
 
                 st.success("分析完成！")
@@ -464,24 +463,16 @@ if st.session_state.analysis_result:
             popup="原始选择点",
             icon=folium.Icon(color='green', icon='flag')
         ).add_to(result_map)
-
         # 添加推荐点
         for idx, point in enumerate(st.session_state.analysis_result["recommendations"]):
+            st.subheader(f"推荐点位{idx}")
+            st.table(point)
+            # print(idx,point["lat"], point["lng"])
             folium.CircleMarker(
                 location=[point["lat"], point["lng"]],
-                radius=20,
-                popup=folium.Popup(f"""
-                                <b>推荐点位 {idx + 1}</b><br>
-                                <hr>
-                                recommendations text: {st.session_state.analysis_result['text'][idx]}<br>
-                            """, max_width=300),
-                color="red",
-                fill=True,
-                fill_color="red"
+                popup=folium.Popup(f"推荐点位{idx}"),
+                icon=folium.Icon(color='red', icon='star'),
             ).add_to(result_map)
-        # 添加图层控制
-        folium.LayerControl().add_to(m)
-
         st_folium(result_map, width=800, height=500)
 
 # 隐藏streamlit默认菜单和页脚
@@ -491,4 +482,5 @@ hide_streamlit_style = """
 footer {visibility: hidden;}
 </style>
 """
+
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
