@@ -5,10 +5,13 @@ import requests
 from streamlit_folium import st_folium
 import folium
 from folium.plugins import Draw
-import json
 import math
 from folium.plugins import HeatMap
-import re
+from sklearn.cluster import KMeans
+from scipy.stats import gaussian_kde
+from scipy.spatial.distance import cdist
+
+from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 # 页面配置
 st.set_page_config(layout="wide", page_title="无人机机场选址智能分析系统")
@@ -21,23 +24,50 @@ if "poi_data" not in st.session_state:
     st.session_state.poi_data = None
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
-# 修改地图交互处理部分
+if "pareto_candidates" not in st.session_state:
+    st.session_state.pareto_candidates = None
 
+# 常量
 # API常量配置
 MIN_RADIUS_KM = 1.0  # 最小允许半径
 
 # POI类型配置
 # 每日api限额100次，每次花费和种类相同的次数，节省限额所以大部分先注释掉
 POI_TYPES = {
-    #"住宅区": "120000",  # 居住区
-    "商务楼宇": "120200",  # 商务住宅
-    #"购物中心": "060100",  # 购物相关
-    #"餐饮服务": "050000",  # 餐饮
+    "住宅区": "120000",  # 居住区
+    #"商务楼宇": "120200",  # 商务住宅
+    "购物中心": "060100",  # 购物相关
+    "餐饮服务": "050000",  # 餐饮
     #"学校": "141200",  # 教育
     #"交通枢纽": "150000",  # 交通设施
     #"医院": "090000",  # 医疗
-    #"写字楼": "120201"  # 写字楼
+    "写字楼": "120201"  # 写字楼
 }
+# 类型距离映射配置
+POI_DISTANCE_RULES = {
+    # 取货点类型 (1km覆盖)
+    "050000": 1000,  # 餐饮服务
+    "060100": 1000,  # 购物中心
+    # 送货点类型 (5km覆盖)
+    "120000": 5000,  # 住宅区
+    "120201": 5000,  # 写字楼
+    # 其他默认 (3km)
+    "default": 3000
+}
+# 类型权重配置
+POI_WEIGHTS = {
+    "050000": 1.5,  # 餐饮高权重
+    "060100": 1.2,
+    "120000": 1.0,
+    "120201": 1.0,
+    "default": 0.8
+}
+# 点类型配置
+POI_TYPE_ICONS = {
+    "推荐点": "cloud",
+    "原始点": "flag"
+}
+
 
 def get_circle_boundary(lat, lng, radius_km=15, points=36):
     """
@@ -59,6 +89,97 @@ def get_circle_boundary(lat, lng, radius_km=15, points=36):
         boundary.append([lat + dy, lng + dx])
     return boundary
 
+def safe_normalize(data):
+    """防御性标准化（处理全零值）"""
+    data = np.asarray(data)
+    if np.all(data == 0) or len(data) == 0:
+        return np.zeros_like(data)
+    return (data - np.min(data)) / (np.max(data) - np.min(data) + 1e-6)
+def generate_candidate_points(poi_df, n_clusters=10):
+    """通过K-Means聚类生成候选点位"""
+    coords = poi_df[['lng', 'lat']].values
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    kmeans.fit(coords)
+    # 返回聚类中心作为候选点
+    return kmeans.cluster_centers_
+
+def calculate_kde_scores(poi_df, candidate_points):
+    """计算每个候选点的核密度得分"""
+    # 提取POI坐标和权重（商家权重=1.5，居民区=1.0）
+    poi_coords = poi_df[['lng', 'lat']].values.T  # (2, N)
+    weights = poi_df['type'].map({'餐饮服务': 1.5, '住宅区': 1.0, '写字楼': 1.2}).fillna(1.0).values
+
+    # 计算带权重的KDE
+    kde = gaussian_kde(poi_coords, weights=weights)
+
+    # 评估候选点密度
+    scores = kde.evaluate(candidate_points.T)  # candidate_points形状为(N, 2)
+    return pd.DataFrame({'lng': candidate_points[:, 0], 'lat': candidate_points[:, 1], 'kde_score': scores})
+
+def optimize_pareto_front(candidates, poi_df, top_n=3):
+    """动态距离阈值+加权覆盖的Pareto优化"""
+    # 预处理
+    candidates = candidates.dropna(subset=['lng', 'lat']).copy()
+    poi_df = poi_df.dropna(subset=['lng', 'lat']).copy()
+
+    # 获取每个POI的距离规则
+    poi_types = poi_df['type'].apply(lambda x: x if x in POI_DISTANCE_RULES else 'default')
+    poi_distances = poi_types.map(POI_DISTANCE_RULES).values
+    poi_weights = poi_types.map(POI_WEIGHTS).values
+
+    # 计算距离矩阵
+    candidate_coords = candidates[['lng', 'lat']].values
+    poi_coords = poi_df[['lng', 'lat']].values
+    distance_matrix = cdist(candidate_coords, poi_coords)  # 单位：米
+
+    # 动态覆盖计算
+    # 生成覆盖掩码（考虑类型距离规则）
+    coverage_mask = distance_matrix <= poi_distances
+
+    # 计算加权覆盖度
+    weighted_coverage = (coverage_mask * poi_weights).sum(axis=1)
+
+    # 有效距离计算
+    # 仅统计在覆盖范围内的距离
+    valid_distances = np.where(coverage_mask, distance_matrix, np.nan)
+    avg_distance = np.nanmean(valid_distances, axis=1)
+    avg_distance = np.nan_to_num(avg_distance, nan=5000)  # 无覆盖时设为最大
+
+    # 标准化
+    norm_coverage = safe_normalize(weighted_coverage)
+    norm_distance = 1 - safe_normalize(avg_distance)  # 距离越小得分越高
+
+    # 非支配排序
+    objectives = np.column_stack([-norm_coverage, avg_distance])
+    fronts = NonDominatedSorting().do(objectives, n_stop_if_ranked=top_n)
+
+    # 结果选择
+    selected_indices = []
+    for front in fronts:
+        remaining = top_n - len(selected_indices)
+        selected_indices.extend(front[:remaining])
+        if remaining <= 0:
+            break
+
+    # 结果格式化
+    result_df = candidates.iloc[selected_indices].copy()
+    result_df['weighted_coverage'] = weighted_coverage[selected_indices]
+    result_df['avg_distance'] = avg_distance[selected_indices]
+    result_df['score'] = 0.7 * norm_coverage[selected_indices] + 0.3 * norm_distance[selected_indices]
+
+    # return result_df.sort_values('score', ascending=False).head(top_n)
+    # 不能直接返回DataFrame
+    return [
+        {
+            "lat": row['lat'],
+            "lng": row['lng'],
+            "kde_score":row['kde_score'],
+            "weighted_coverage":row['weighted_coverage'],
+            "avg_distance":row['avg_distance'],
+            "score":row['score'],
+        }
+        for _, row in result_df.iterrows()
+    ]
 # 1. 地图交互模块
 with st.expander("🗺️ 第一步：选择中心点", expanded=True):
     col_map, col_info = st.columns([3, 1])
@@ -217,9 +338,9 @@ def get_combined_poi(api_key, location, radius, types=None):
     all_pois = []
     for type_code in types:
         url = f"https://restapi.amap.com/v3/place/around?key={api_key}" \
-              f"&location={location}&radius={radius}&types={type_code}&offset=120"
+              f"&location={location}&radius={radius}&types={type_code}&offset=500"
         try:
-            response = requests.get(url, timeout=30)
+            response = requests.get(url, timeout=50)
             data = response.json()
             if data['status'] != '1':
                 break
@@ -230,41 +351,6 @@ def get_combined_poi(api_key, location, radius, types=None):
             st.warning(f"获取{type_code}类型POI失败: {str(e)}")
 
     return all_pois
-
-
-# 在后端分析部分添加评分逻辑
-def calculate_scores(poi_df, center_point):
-    """计算选址评分"""
-    scores = {
-        "coverage": 0,  # 覆盖度
-        "density": 0,  # POI密度
-        "diversity": 0  # 类型多样性
-    }
-
-    # 1. 覆盖度评分 (5km范围内POI数量占比)
-    nearby_pois = poi_df[poi_df["distance"] <= 5000]
-    scores["coverage"] = min(len(nearby_pois) / 50, 1.0) * 100  # 标准化到0-100
-
-    # 2. 密度评分 (按单位面积POI数量)
-    area = math.pi * (5 ** 2)  # 5km半径圆面积
-    scores["density"] = min(len(nearby_pois) / area * 100, 100)
-
-    # 3. 多样性评分 (类型熵)
-    type_counts = nearby_pois["type"].value_counts()
-    proportions = type_counts / type_counts.sum()
-    entropy = -sum(proportions * np.log(proportions))
-    scores["diversity"] = min(entropy * 20, 100)  # 标准化
-
-    # 综合评分
-    weights = {"coverage": 0.4, "density": 0.3, "diversity": 0.3}
-    total_score = sum(scores[k] * w for k, w in weights.items())
-
-    return {
-        **scores,
-        "total_score": total_score,
-        "poi_count": len(nearby_pois),
-        "type_distribution": type_counts.to_dict()
-    }
 
 # 在点击获取POI按钮时调用
 if st.session_state.selected_point and st.button("获取周边POI数据"):
@@ -282,37 +368,55 @@ if st.session_state.selected_point and st.button("获取周边POI数据"):
     # 处理数据
     processed_data = []
     for poi in all_pois:
-        lng, lat = poi["location"].split(",")
-        processed_data.append({
-            "name": poi["name"],
-            "type": poi["poi_type"],
-            "address": poi["address"],
-            "lat": float(lat),
-            "lng": float(lng),
-            "distance": float(poi["distance"])
-        })
-
-    st.session_state.poi_data = pd.DataFrame(processed_data)
-
+        try:
+            lng, lat = map(float, poi["location"].split(","))
+            if not (-180 <= lng <= 180 and -90 <= lat <= 90):
+                raise ValueError("坐标超出合理范围")
+            address = str(poi["address"])  # 强制转换为字符串
+            # 如果address是列表，转换为逗号分隔字符串
+            if isinstance(poi["address"], list):
+                address = ", ".join(poi["address"])
+            processed_data.append({
+                "name": str(poi.get("name", "")),
+                "type": str(poi.get("poi_type", "其他")),
+                "address": address,
+                "lat": lat,
+                "lng": lng,
+                "distance": float(poi.get("distance", 0))
+            })
+        except Exception as e:
+            st.error(f"解析POI数据失败：{str(e)}")
+            continue
+    # 创建DataFrame并清洗
+    df = pd.DataFrame(processed_data)
+    # 二次清洗
+    df = df[
+        (df['lat'].notnull()) &
+        (df['lng'].notnull())
+        ]
+    df = df.astype({
+        "name": "string",
+        "type": "category",
+        "address": "string",
+        "lat": "float32",
+        "lng": "float32",
+        "distance": "float32"
+    })
+    st.session_state.poi_data = df
 
 # 显示POI数据
 if st.session_state.poi_data is not None:
     with st.expander("📊 POI数据预览"):
         st.dataframe(st.session_state.poi_data.head(20))
-
         # 可视化POI分布
         st.subheader("POI分布热力图")
-
         # 创建可视化地图
         viz_map = folium.Map(
             location=[st.session_state.selected_point['lat'], st.session_state.selected_point['lng']],
             zoom_start=12
         )
-
-        #heat_data = [[row[1], row[0]] for row in st.session_state.poi_data["location"].str.split(",").tolist()]
         heat_data = get_coordinates(st.session_state.poi_data)
         if heat_data:
-            #HeatMap(heat_data).add_to(m)
             HeatMap(heat_data, radius=15).add_to(viz_map)
 
         # 添加分析范围
@@ -332,55 +436,70 @@ if st.session_state.poi_data is not None:
         ).add_to(viz_map)
 
         st_folium(viz_map, width=800, height=500)
+if st.session_state.poi_data is not None:
+    # 数据完整性检查
+    st.subheader("数据健康检查")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric("总POI数量", len(st.session_state.poi_data))
+        st.metric("有效坐标数",
+                  len(st.session_state.poi_data.dropna(subset=['lat', 'lng'])))
+
+    with col2:
+        invalid_coords = st.session_state.poi_data[
+            (~st.session_state.poi_data['lat'].between(-90, 90)) |
+            (~st.session_state.poi_data['lng'].between(-180, 180))
+            ]
+        st.metric("无效坐标数", len(invalid_coords))
+
+## 后端算法
+if st.session_state.poi_data is not None and st.button("开始优化选址"):
+    poi_df = st.session_state.poi_data
+    # 进度管理
+    with st.status("🚀 优化进程", state="running") as status:
+        # 阶段1: 生成候选点
+        st.write("1/3 使用K-Means聚类识别高密度区域...生成候选点...")
+        candidate_points = generate_candidate_points(poi_df)  # 使用清洗后的数据
+
+        # 阶段2: 核密度估计
+        st.write("2/3 计算带权重的空间密度分布...核密度估计...")
+        kde_scores = calculate_kde_scores(poi_df, candidate_points)
+
+        # 阶段3: 多目标优化
+        st.write("3/3 Pareto前沿筛选最优解...Pareto优化...")
+        pareto_candidates = optimize_pareto_front(kde_scores, poi_df)
+
+        status.update(label="✅ 优化完成", state="complete")
+    # 结果显示
+    st.subheader("📊 数据质量报告")
+    st.metric("有效候选点", len(pareto_candidates))
+    st.write(pareto_candidates)
+    st.session_state.pareto_candidates = pareto_candidates
 
 #  DeepSeek API分析
 if st.session_state.poi_data is not None and st.button("进行智能分析"):
-    with st.spinner("正在调用DeepSeek API进行分析..."):
+    with st.spinner("AI分析中..."):
         try:
-            # 准备分析数据（示例）
-            poi_stats = {
-                "total_pois": len(st.session_state.poi_data),
-                "avg_distance": st.session_state.poi_data["distance"].mean(),
-                "type_distribution": st.session_state.poi_data["type"].value_counts().to_dict()
-            }
-
-            # 构造prompt
+            # 数据准备
+            points = [{"lat": p["lat"], "lng": p["lng"]} for p in st.session_state.pareto_candidates]
+            # 构造专业prompt模板
             prompt = f"""
-            你是一个专业的外卖无人机机场选址评估AI顾问，请根据以下数据提供分析报告：
-
-            - 中心点坐标: ({st.session_state.selected_point['lat']:.6f}, {st.session_state.selected_point['lng']:.6f})
-            - 分析半径: 15公里
-            - POI总数: {poi_stats['total_pois']}
-            - 平均距离: {poi_stats['avg_distance']:.2f}米
-            - 类型分布: {json.dumps(poi_stats['type_distribution'], ensure_ascii=False)}
-
-            请提供：
-            1. 3个最佳选址坐标（纬度,经度）及理由。
-            对每个选址，请从以下维度给出1-5星评分：
-                1. **商业潜力**（餐饮/写字楼密度）
-                2. **运营成本**（根据区域推测租金水平）
-                3. **抗风险能力**（天气适应性和政策支持）
-                4. 和现有的无人机机场的关系
-                5. 电力水平
-                6. 运营时间段
-            格式要求使用Markdown满足程度
-            注意坐标要匹配"(\d+\.\d+),\s*(\d+\.\d+)"正则表达式格式。
-            """
-            # 在调用DeepSeek API前添加评分计算
-            if st.session_state.poi_data is not None:
-                score_result = calculate_scores(
-                    st.session_state.poi_data,
-                    st.session_state.selected_point
-                )
-
-                # 将评分结果加入prompt
-                prompt += f"\n\n当前区域评分:\n"
-                prompt += f"- 覆盖度: {score_result['coverage']:.1f}/100\n"
-                prompt += f"- 密度: {score_result['density']:.1f}/100\n"
-                prompt += f"- 多样性: {score_result['diversity']:.1f}/100\n"
-                prompt += f"- 综合评分: {score_result['total_score']:.1f}/100\n"
-                prompt += f"- POI类型分布: {score_result['type_distribution']}\n"
-            # 调用DeepSeek API（替换为你的实际调用方式）
+                       ## 外卖无人机机场选址AI分析报告
+                       **基础数据**  
+                       - 推荐点数量: {len(points)}  
+                       **最优机场建设候选点**:
+                        - 推荐点坐标: ({points})
+                        - 推荐点信息:{st.session_state.pareto_candidates}
+                        - 生成算法: K-Means聚类+核密度估计+Pareto优化
+                       **深度分析维度**:  
+                       1. 商业潜力对比（基于周边餐饮/购物中心密度）  
+                       2. 交通可达性分析（道路网络+峰值时段）  
+                       3. 空域合规性评估（限飞区检测）
+                       4. 商业成本和租金等（区域租金搜索猜测）  
+                       **输出要求**: 用对比表格呈现前三候选点优劣，最后给出综合推荐。  
+                       """
+            # 调用DeepSeek API
             deepseek_key = st.secrets["DEEPSEEK_KEY"]
             headers = {
                 "Authorization": f"Bearer {deepseek_key}",
@@ -392,88 +511,75 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 "temperature": 0.7,
                 "max_tokens": 2000
             }
-
             response = requests.post(
                 "https://api.deepseek.com/v1/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=(30,50)
             )
-
+            # 结果可视化
             if response.status_code == 200:
-                result = response.json()
-                analysis_text = result["choices"][0]["message"]["content"]
-
-                # 提取坐标并计算评分
-                coord_matches = re.findall(r"(\d+\.\d+),\s*(\d+\.\d+)", analysis_text)
-                st.write("提取到的坐标匹配:", coord_matches)  # 调试用
-                recommended_points = [{"lat": float(lat), "lng": float(lng)} for lat,lng  in coord_matches[:3]]
-
-                # 保存结果
-                st.session_state.analysis_result = {
-                    "text": analysis_text,
-                    "recommendations": recommended_points,
-                    "score": score_result
-                }
-
-                st.success("分析完成！")
-            else:
-                st.error(f"DeepSeek API错误: {response.text}")
+                analysis = response.json()["choices"][0]["message"]["content"]
+                # 存储
+                st.session_state.analysis_result = analysis
         except Exception as e:
             st.error(f"分析失败: {str(e)}")
+    try:
+        st.header("📌 智能分析结果")
+        # 数据准备
+        points = st.session_state.pareto_candidates
 
-# 4. 显示分析结果
-if st.session_state.analysis_result:
-    st.divider()
-    st.header("📌 智能分析结果")
+        # 地图生成
+        map_center = [
+            st.session_state.selected_point['lat'],
+            st.session_state.selected_point['lng']
+        ]
+        m = folium.Map(location=map_center, zoom_start=12)
 
-    col_result, col_viz = st.columns([2, 3])
-
-    with col_result:
-        # 显示Markdown格式的分析报告
-        st.markdown(st.session_state.analysis_result["text"])
-
-        # 添加下载按钮
-        st.download_button(
-            label="下载分析报告",
-            data=st.session_state.analysis_result["text"],
-            file_name="选址分析报告.md",
-            mime="text/markdown"
-        )
-
-    with col_viz:
-        # 创建结果可视化地图
-        result_map = folium.Map(
-            location=[st.session_state.selected_point['lat'], st.session_state.selected_point['lng']],
-            zoom_start=12
-        )
-
-        # 添加分析范围
-        folium.GeoJson(
-            {
-                "type": "Polygon",
-                "coordinates": [st.session_state.analysis_area["boundary"]]
-            },
-            style_function=lambda x: {"fillColor": "blue", "color": "blue", "weight": 2, "fillOpacity": 0.1}
-        ).add_to(result_map)
-
-        # 添加中心点
+        # 中心点
         folium.Marker(
-            [st.session_state.selected_point['lat'], st.session_state.selected_point['lng']],
-            popup="原始选择点",
+            map_center,
+            tooltip="原始中心点",
             icon=folium.Icon(color='green', icon='flag')
-        ).add_to(result_map)
-        # 添加推荐点
-        for idx, point in enumerate(st.session_state.analysis_result["recommendations"]):
-            st.subheader(f"推荐点位{idx}")
-            st.table(point)
-            # print(idx,point["lat"], point["lng"])
-            folium.CircleMarker(
-                location=[point["lat"], point["lng"]],
-                popup=folium.Popup(f"推荐点位{idx}"),
-                icon=folium.Icon(color='red', icon='star'),
-            ).add_to(result_map)
-        st_folium(result_map, width=800, height=500)
+        ).add_to(m)
+
+        # 候选点
+        for idx, point in enumerate(points, 1):
+            folium.Marker(
+                [point["lat"], point["lng"]],
+                tooltip=f"""
+                推荐点#{idx},
+                "lat": {point["lat"]:.8f},
+                "lng": {point["lng"]:.8f},
+                "score":{point['score']:.6f},
+                "kde_score"：{point['kde_score']:.6f},
+                "avg_distance":{point['avg_distance']:.6f},
+                "weighted_coverage":{point['weighted_coverage']:.6f},
+                """,
+                icon=folium.Icon(color='red', icon='cloud')
+            ).add_to(m)
+        col1, col2 = st.columns([0.5, 0.5])
+        with col1:
+            st.markdown(st.session_state.analysis_result)
+        with col2:
+            # 关键修复点：添加key和高度
+            st_folium(
+                m,
+                width=600,
+                height=1000,
+                key="optimized_points_map",
+                returned_objects=[]
+            )
+            # 添加下载按钮
+            st.download_button(
+                label="下载分析报告",
+                data=st.session_state.analysis_result,
+                file_name="选址分析报告.md",
+                mime="text/markdown"
+            )
+    except Exception as e:
+        st.error(f"可视化失败: {str(e)}")
+        st.stop()
 
 # 隐藏streamlit默认菜单和页脚
 hide_streamlit_style = """

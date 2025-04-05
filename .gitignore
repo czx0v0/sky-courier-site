@@ -10,6 +10,15 @@ __pycache__/
 secrets.toml
 
 # IntelliJ IDEA 特定文件
+.idea/
+*.iml
+*.iws
+*.ipr
+*.ids
+*.orig
+*.xml
+
+# 忽略整个 .idea 目录
 .idea/*
 
 # 生成的目录和文件
