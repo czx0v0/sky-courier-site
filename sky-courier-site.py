@@ -617,9 +617,9 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                     [poi['lat'], poi['lng']],
                     popup=poi["name"],
                     icon=folium.DivIcon(
-                        icon_size=(10, 10),
-                        icon_anchor=(5, 5),
-                        html='<div style="background:rgba(150,150,150,0.7); width:10px; height:10px; border-radius:50%;"></div>'
+                        icon_size=(15, 15),
+                        icon_anchor=(10, 10),
+                        html='<div style="background:rgba(150,150,150,0.7); width:15px; height:15px; border-radius:50%;"></div>'
                     ),
                 ).add_to(m)
                 folium.PolyLine(
