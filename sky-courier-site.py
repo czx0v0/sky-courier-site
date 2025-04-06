@@ -546,7 +546,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                         3. 空域合规性评估（限飞区搜索推测）
                         4. 商业成本和租金等（区域租金搜索推测）  
                         ## 输出要求: 
-                        请结合以上纬度用对比表格呈现前{len(points)} 名候选点优劣，最后给出综合推荐。  
+                        请结合以上维度用对比表格呈现前{len(points)} 名候选点优劣，最后给出综合推荐。  
                        """
             # 调用DeepSeek API
             deepseek_key = st.secrets["DEEPSEEK_KEY"]
