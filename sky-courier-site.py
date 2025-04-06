@@ -10,7 +10,8 @@ from folium.plugins import HeatMap
 from sklearn.cluster import KMeans
 from scipy.stats import gaussian_kde
 from scipy.spatial.distance import cdist
-
+from geopy.distance import geodesic
+import time
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 
 # 页面配置
@@ -45,21 +46,21 @@ POI_TYPES = {
 }
 # 类型距离映射配置
 POI_DISTANCE_RULES = {
-    # 取货点类型 (1km覆盖)
-    "050000": 1000,  # 餐饮服务
-    "060100": 1000,  # 购物中心
-    # 送货点类型 (5km覆盖)
-    "120000": 5000,  # 住宅区
-    "120201": 5000,  # 写字楼
-    # 其他默认 (3km)
-    "default": 3000
+    # 取货点类型 (500km覆盖)
+    "餐饮服务": 500,  # 餐饮服务
+    "购物中心": 500,  # 购物中心
+    # 送货点类型 (2.5km覆盖)
+    "住宅区": 4000,  # 住宅区
+    "写字楼": 4000,  # 写字楼
+    # 其他默认
+    "default": 2500
 }
 # 类型权重配置
 POI_WEIGHTS = {
-    "050000": 1.5,  # 餐饮高权重
-    "060100": 1.2,
-    "120000": 1.0,
-    "120201": 1.0,
+    "餐饮服务": 1.3,  # 餐饮高权重
+    "购物中心": 1.5,
+    "住宅区": 1.0,
+    "写字楼": 1.0,
     "default": 0.8
 }
 # 点类型配置
@@ -116,6 +117,23 @@ def calculate_kde_scores(poi_df, candidate_points):
     scores = kde.evaluate(candidate_points.T)  # candidate_points形状为(N, 2)
     return pd.DataFrame({'lng': candidate_points[:, 0], 'lat': candidate_points[:, 1], 'kde_score': scores})
 
+
+def calculate_geo_distance_matrix(candidates, pois):
+    """地理距离矩阵（单位：米）"""
+    # 转换为 (lat, lng) 元组列表
+    candidates_points = [(row['lat'], row['lng']) for _, row in candidates.iterrows()]
+    pois_points = [(row['lat'], row['lng']) for _, row in pois.iterrows()]
+
+    # 预分配矩阵
+    distance_matrix = np.zeros((len(candidates_points), len(pois_points)))
+
+    # 双重循环计算真实地理距离
+    for i, c_point in enumerate(candidates_points):
+        for j, p_point in enumerate(pois_points):
+            distance_matrix[i][j] = geodesic(c_point, p_point).meters
+
+    return distance_matrix
+
 def optimize_pareto_front(candidates, poi_df, top_n=3):
     """动态距离阈值+加权覆盖的Pareto优化"""
     # 预处理
@@ -125,16 +143,21 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
     # 获取每个POI的距离规则
     poi_types = poi_df['type'].apply(lambda x: x if x in POI_DISTANCE_RULES else 'default')
     poi_distances = poi_types.map(POI_DISTANCE_RULES).values
+    # st.write(poi_distances)
     poi_weights = poi_types.map(POI_WEIGHTS).values
+    # st.write(poi_weights)
 
     # 计算距离矩阵
     candidate_coords = candidates[['lng', 'lat']].values
     poi_coords = poi_df[['lng', 'lat']].values
-    distance_matrix = cdist(candidate_coords, poi_coords)  # 单位：米
+    #distance_matrix = cdist(candidate_coords, poi_coords)  # 单位：米
+    distance_matrix = calculate_geo_distance_matrix(candidates, poi_df)
+    st.write(distance_matrix)
 
     # 动态覆盖计算
     # 生成覆盖掩码（考虑类型距离规则）
-    coverage_mask = distance_matrix <= poi_distances
+    coverage_mask = distance_matrix < poi_distances
+    st.write(coverage_mask)
 
     # 计算加权覆盖度
     weighted_coverage = (coverage_mask * poi_weights).sum(axis=1)
@@ -165,7 +188,7 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
     result_df = candidates.iloc[selected_indices].copy()
     result_df['weighted_coverage'] = weighted_coverage[selected_indices]
     result_df['avg_distance'] = avg_distance[selected_indices]
-    result_df['score'] = 0.7 * norm_coverage[selected_indices] + 0.3 * norm_distance[selected_indices]
+    result_df['score'] = 0.6 * norm_coverage[selected_indices] + 0.4 * norm_distance[selected_indices]
 
     # return result_df.sort_values('score', ascending=False).head(top_n)
     # 不能直接返回DataFrame
@@ -337,19 +360,26 @@ def get_combined_poi(api_key, location, radius, types=None):
         types = list(POI_TYPES.values())
     all_pois = []
     for type_code in types:
-        url = f"https://restapi.amap.com/v3/place/around?key={api_key}" \
-              f"&location={location}&radius={radius}&types={type_code}&offset=500"
-        try:
-            response = requests.get(url, timeout=50)
-            data = response.json()
-            if data['status'] != '1':
-                break
-            for poi in data["pois"]:
-                poi["poi_type"] = [k for k, v in POI_TYPES.items() if v == type_code][0]
-                all_pois.append(poi)
-        except Exception as e:
-            st.warning(f"获取{type_code}类型POI失败: {str(e)}")
+        page = 1
+        while True:
+            url = f"https://restapi.amap.com/v3/place/around?key={api_key}" \
+                  f"&location={location}&radius={radius}&types={type_code}&offset=20&page={page}"
+            try:
+                response = requests.get(url, timeout=50)
+                data = response.json()
+                if data['status'] != '1':
+                    break
+                for poi in data["pois"]:
+                    poi["poi_type"] = [k for k, v in POI_TYPES.items() if v == type_code][0]
+                    all_pois.append(poi)
+                page += 1
 
+                time.sleep(0.8)
+                if page > 30:  # 最多20页
+                    break
+            except Exception as e:
+                st.warning(f"获取{type_code}类型POI失败: {str(e)}")
+        st.write(f'{type_code}获取完成')
     return all_pois
 
 # 在点击获取POI按钮时调用
@@ -457,18 +487,22 @@ if st.session_state.poi_data is not None:
 if st.session_state.poi_data is not None and st.button("开始优化选址"):
     poi_df = st.session_state.poi_data
     # 进度管理
-    with st.status("🚀 优化进程", state="running") as status:
+    with st.status("🚀 优化进程", state="running", expanded=True) as status:
         # 阶段1: 生成候选点
-        st.write("1/3 使用K-Means聚类识别高密度区域...生成候选点...")
+
+        st.write("🧮 1/3 使用K-Means聚类识别高密度区域...生成候选点...")
         candidate_points = generate_candidate_points(poi_df)  # 使用清洗后的数据
+        time.sleep(0.5)
 
         # 阶段2: 核密度估计
-        st.write("2/3 计算带权重的空间密度分布...核密度估计...")
+        st.write("🗺️ 2/3 计算带权重的空间密度分布...核密度估计...")
         kde_scores = calculate_kde_scores(poi_df, candidate_points)
+        time.sleep(0.5)
 
         # 阶段3: 多目标优化
-        st.write("3/3 Pareto前沿筛选最优解...Pareto优化...")
-        pareto_candidates = optimize_pareto_front(kde_scores, poi_df)
+        st.write("💻 3/3 Pareto前沿筛选最优解...Pareto优化...")
+        pareto_candidates = optimize_pareto_front(kde_scores, poi_df,top_n = 5)
+        time.sleep(0.5)
 
         status.update(label="✅ 优化完成", state="complete")
     # 结果显示
@@ -482,6 +516,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
     with st.spinner("AI分析中..."):
         try:
             # 数据准备
+            st.write(st.session_state.pareto_candidates)
             points = [{"lat": p["lat"], "lng": p["lng"]} for p in st.session_state.pareto_candidates]
             # 构造专业prompt模板
             prompt = f"""
@@ -497,7 +532,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                        2. 交通可达性分析（道路网络+峰值时段）  
                        3. 空域合规性评估（限飞区检测）
                        4. 商业成本和租金等（区域租金搜索猜测）  
-                       **输出要求**: 用对比表格呈现前三候选点优劣，最后给出综合推荐。  
+                       **输出要求**: 用对比表格呈现前{len(points)} 名候选点优劣，最后给出综合推荐。  
                        """
             # 调用DeepSeek API
             deepseek_key = st.secrets["DEEPSEEK_KEY"]
@@ -528,7 +563,6 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
         st.header("📌 智能分析结果")
         # 数据准备
         points = st.session_state.pareto_candidates
-
         # 地图生成
         map_center = [
             st.session_state.selected_point['lat'],
@@ -558,25 +592,25 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 """,
                 icon=folium.Icon(color='red', icon='cloud')
             ).add_to(m)
-        col1, col2 = st.columns([0.5, 0.5])
-        with col1:
-            st.markdown(st.session_state.analysis_result)
-        with col2:
-            # 关键修复点：添加key和高度
-            st_folium(
-                m,
-                width=600,
-                height=1000,
-                key="optimized_points_map",
-                returned_objects=[]
-            )
-            # 添加下载按钮
-            st.download_button(
-                label="下载分析报告",
-                data=st.session_state.analysis_result,
-                file_name="选址分析报告.md",
-                mime="text/markdown"
-            )
+        # col1, col2 = st.columns([0.5, 0.5])
+        # with col1:
+        st.markdown(st.session_state.analysis_result)
+        # with col2:
+        # 添加key和高度
+        st_folium(
+            m,
+            width=800,
+            height=600,
+            key="optimized_points_map",
+            returned_objects=[]
+        )
+        # 添加下载按钮
+        st.download_button(
+            label="下载分析报告",
+            data=st.session_state.analysis_result,
+            file_name="选址分析报告.md",
+            mime="text/markdown"
+        )
     except Exception as e:
         st.error(f"可视化失败: {str(e)}")
         st.stop()
