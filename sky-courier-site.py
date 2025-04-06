@@ -9,7 +9,6 @@ import math
 from folium.plugins import HeatMap
 from sklearn.cluster import KMeans
 from scipy.stats import gaussian_kde
-from scipy.spatial.distance import cdist
 from geopy.distance import geodesic
 import time
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
@@ -65,8 +64,9 @@ POI_WEIGHTS = {
 }
 # 点类型配置
 POI_TYPE_ICONS = {
-    "推荐点": "cloud",
-    "原始点": "flag"
+    "推荐点": "flag",
+    "中心点": "star",
+    #"周边点": "cloud"
 }
 
 
@@ -108,7 +108,7 @@ def calculate_kde_scores(poi_df, candidate_points):
     """计算每个候选点的核密度得分"""
     # 提取POI坐标和权重（商家权重=1.5，居民区=1.0）
     poi_coords = poi_df[['lng', 'lat']].values.T  # (2, N)
-    weights = poi_df['type'].map({'餐饮服务': 1.5, '住宅区': 1.0, '写字楼': 1.2}).fillna(1.0).values
+    weights = poi_df['type'].map({'餐饮服务': 1.3,"购物中心":1.5, '住宅区': 1.0, '写字楼': 1.0}).fillna(1.0).values
 
     # 计算带权重的KDE
     kde = gaussian_kde(poi_coords, weights=weights)
@@ -152,12 +152,14 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
     poi_coords = poi_df[['lng', 'lat']].values
     #distance_matrix = cdist(candidate_coords, poi_coords)  # 单位：米
     distance_matrix = calculate_geo_distance_matrix(candidates, poi_df)
-    st.write(distance_matrix)
+    # st.write(distance_matrix)
+    # 获取每个候选点最近的5个POI索引
+    nearest_indices = np.argpartition(distance_matrix, 5, axis=1)[:, :5]
 
     # 动态覆盖计算
     # 生成覆盖掩码（考虑类型距离规则）
     coverage_mask = distance_matrix < poi_distances
-    st.write(coverage_mask)
+    # st.write(coverage_mask)
 
     # 计算加权覆盖度
     weighted_coverage = (coverage_mask * poi_weights).sum(axis=1)
@@ -200,8 +202,12 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
             "weighted_coverage":row['weighted_coverage'],
             "avg_distance":row['avg_distance'],
             "score":row['score'],
+            "nearest_pois": [
+                {k:v for k,v in p.items() if k in ['name','type','lat','lng','distance']}
+                for p in poi_df.iloc[nearest_indices[i]].to_dict('records')
+            ]
         }
-        for _, row in result_df.iterrows()
+        for i, row in result_df.iterrows()
     ]
 # 1. 地图交互模块
 with st.expander("🗺️ 第一步：选择中心点", expanded=True):
@@ -516,17 +522,23 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
     with st.spinner("AI分析中..."):
         try:
             # 数据准备
-            st.write(st.session_state.pareto_candidates)
-            points = [{"lat": p["lat"], "lng": p["lng"]} for p in st.session_state.pareto_candidates]
+            # st.write(st.session_state.pareto_candidates)
+            points = [{"lat": p["lat"], "lng": p["lng"],"score":p['score'],
+                                "kde_score":p['kde_score'],"avg_distance":p['avg_distance'],
+                                "weighted_coverage":p['weighted_coverage'],"nearest_pois":p['nearest_pois']} for p in st.session_state.pareto_candidates]
             # 构造专业prompt模板
             prompt = f"""
                        ## 外卖无人机机场选址AI分析报告
-                       **基础数据**  
-                       - 推荐点数量: {len(points)}  
                        **最优机场建设候选点**:
-                        - 推荐点坐标: ({points})
-                        - 推荐点信息:{st.session_state.pareto_candidates}
-                        - 生成算法: K-Means聚类+核密度估计+Pareto优化
+                        - 推荐点详细信息:{st.session_state.pareto_candidates}
+                                - "lat": 纬度
+                                - "lng": 经度
+                                - "score": 总分
+                                - "kde_score"：核密度
+                                - "avg_distance": 周边poi平均距离
+                                - "weighted_coverage": 加权poi覆盖度
+                                - "nearest_pois": 周边主要poi
+                        - 算法: K-Means聚类+核密度估计+Pareto优化
                        **深度分析维度**:  
                        1. 商业潜力对比（基于周边餐饮/购物中心密度）  
                        2. 交通可达性分析（道路网络+峰值时段）  
@@ -573,8 +585,10 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
         # 中心点
         folium.Marker(
             map_center,
-            tooltip="原始中心点",
-            icon=folium.Icon(color='green', icon='flag')
+            tooltip="<b>原始中心点<b>",
+            icon=folium.Icon(icon=POI_TYPE_ICONS['中心点'],
+                             color="red",
+                             )
         ).add_to(m)
 
         # 候选点
@@ -590,13 +604,32 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 "avg_distance":{point['avg_distance']:.6f},<br>
                 "weighted_coverage":{point['weighted_coverage']:.6f},
                 """,
-                icon=folium.Icon(color='red', icon='cloud')
+                icon = folium.Icon(
+                    icon=POI_TYPE_ICONS['推荐点'],
+                    color="green",
+                    angle=45
+                )
             ).add_to(m)
-        # col1, col2 = st.columns([0.5, 0.5])
-        # with col1:
+
+            # 绘制POI连线
+            for poi in point['nearest_pois']:
+                folium.Marker(
+                    [poi['lat'], poi['lng']],
+                    popup=poi["name"],
+                    icon=folium.DivIcon(
+                        icon_size=(10, 10),
+                        icon_anchor=(5, 5),
+                        html='<div style="background:rgba(150,150,150,0.7); width:10px; height:10px; border-radius:50%;"></div>'
+                    ),
+                ).add_to(m)
+                folium.PolyLine(
+                    locations=[[point['lat'], point['lng']], [poi['lat'], poi['lng']]],
+                    color="black",
+                    weight = 2,
+                    dash_array="5,3"
+                ).add_to(m)
+
         st.markdown(st.session_state.analysis_result)
-        # with col2:
-        # 添加key和高度
         st_folium(
             m,
             width=800,
