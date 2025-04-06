@@ -148,8 +148,8 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
     # st.write(poi_weights)
 
     # 计算距离矩阵
-    candidate_coords = candidates[['lng', 'lat']].values
-    poi_coords = poi_df[['lng', 'lat']].values
+    # candidate_coords = candidates[['lng', 'lat']].values
+    # poi_coords = poi_df[['lng', 'lat']].values
     #distance_matrix = cdist(candidate_coords, poi_coords)  # 单位：米
     distance_matrix = calculate_geo_distance_matrix(candidates, poi_df)
     # st.write(distance_matrix)
@@ -193,7 +193,7 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
     result_df['score'] = 0.6 * norm_coverage[selected_indices] + 0.4 * norm_distance[selected_indices]
 
     # return result_df.sort_values('score', ascending=False).head(top_n)
-    # 不能直接返回DataFrame
+    # 不能直接返回DataFrame!
     return [
         {
             "lat": row['lat'],
@@ -369,7 +369,7 @@ def get_combined_poi(api_key, location, radius, types=None):
         page = 1
         while True:
             url = f"https://restapi.amap.com/v3/place/around?key={api_key}" \
-                  f"&location={location}&radius={radius}&types={type_code}&offset=20&page={page}"
+                  f"&location={location}&radius={radius}&types={type_code}&offset=20&page={page}" # offset<=25
             try:
                 response = requests.get(url, timeout=50)
                 data = response.json()
@@ -381,7 +381,7 @@ def get_combined_poi(api_key, location, radius, types=None):
                 page += 1
 
                 time.sleep(0.8)
-                if page > 30:  # 最多20页
+                if page > 30:  # 最多页数
                     break
             except Exception as e:
                 st.warning(f"获取{type_code}类型POI失败: {str(e)}")
@@ -528,23 +528,25 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                                 "weighted_coverage":p['weighted_coverage'],"nearest_pois":p['nearest_pois']} for p in st.session_state.pareto_candidates]
             # 构造专业prompt模板
             prompt = f"""
-                       ## 外卖无人机机场选址AI分析报告
-                       **最优机场建设候选点**:
+                        ## 角色定义：
+                        你是一名城市规划专家，需评估外卖无人机机场配送站选址方案，提供外卖无人机机场选址AI分析报告。
+                        ## 最优机场建设候选点数据：
                         - 推荐点详细信息:{st.session_state.pareto_candidates}
-                                - "lat": 纬度
-                                - "lng": 经度
-                                - "score": 总分
-                                - "kde_score"：核密度
-                                - "avg_distance": 周边poi平均距离
-                                - "weighted_coverage": 加权poi覆盖度
-                                - "nearest_pois": 周边主要poi
-                        - 算法: K-Means聚类+核密度估计+Pareto优化
-                       **深度分析维度**:  
-                       1. 商业潜力对比（基于周边餐饮/购物中心密度）  
-                       2. 交通可达性分析（道路网络+峰值时段）  
-                       3. 空域合规性评估（限飞区检测）
-                       4. 商业成本和租金等（区域租金搜索猜测）  
-                       **输出要求**: 用对比表格呈现前{len(points)} 名候选点优劣，最后给出综合推荐。  
+                            - "lat": 纬度
+                            - "lng": 经度
+                            - "score": 总得分
+                            - "kde_score"：核密度评分
+                            - "avg_distance": 周边poi平均距离
+                            - "weighted_coverage": 加权poi覆盖度
+                            - "nearest_pois": 周边主要poi
+                        - （算法: K-Means聚类+核密度估计+Pareto优化）
+                        ## 深度分析维度:  
+                        1. 商业潜力对比（基于周边餐饮/购物中心密度）  
+                        2. 交通可达性分析（道路网络+峰值时段）  
+                        3. 空域合规性评估（限飞区搜索推测）
+                        4. 商业成本和租金等（区域租金搜索推测）  
+                        ## 输出要求: 
+                        请结合以上纬度用对比表格呈现前{len(points)} 名候选点优劣，最后给出综合推荐。  
                        """
             # 调用DeepSeek API
             deepseek_key = st.secrets["DEEPSEEK_KEY"]
@@ -600,7 +602,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 "lat": {point["lat"]:.8f},<br>
                 "lng": {point["lng"]:.8f},<br>
                 "score":{point['score']:.6f},<br>
-                "kde_score"：{point['kde_score']:.6f},<br>
+                "kde_score":{point['kde_score']:.6f},<br>
                 "avg_distance":{point['avg_distance']:.6f},<br>
                 "weighted_coverage":{point['weighted_coverage']:.6f},
                 """,
@@ -615,7 +617,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
             for poi in point['nearest_pois']:
                 folium.Marker(
                     [poi['lat'], poi['lng']],
-                    popup=poi["name"],
+                    popup=poi["name"], # 点击查看
                     icon=folium.DivIcon(
                         icon_size=(15, 15),
                         icon_anchor=(10, 10),
