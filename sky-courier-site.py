@@ -20,8 +20,12 @@ st.title("🥡 无人机机场选址智能分析系统")
 # 初始化session状态
 if "selected_point" not in st.session_state:
     st.session_state.selected_point = None
+if "analysis_area" not in st.session_state:
+    st.session_state.analysis_area = None
 if "poi_data" not in st.session_state:
     st.session_state.poi_data = None
+if "candidate_poi" not in st.session_state:
+    st.session_state.candidate_poi = None
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 if "pareto_candidates" not in st.session_state:
@@ -34,32 +38,42 @@ MIN_RADIUS_KM = 1.0  # 最小允许半径
 # POI类型配置
 # 每日api限额100次，每次花费和种类相同的次数，节省限额所以大部分先注释掉
 POI_TYPES = {
+    "购物中心": "060100",  # 购物相关
+    "写字楼": "120201",  # 写字楼
     "住宅区": "120000",  # 居住区
     #"商务楼宇": "120200",  # 商务住宅
-    "购物中心": "060100",  # 购物相关
     "餐饮服务": "050000",  # 餐饮
     #"学校": "141200",  # 教育
     #"交通枢纽": "150000",  # 交通设施
     #"医院": "090000",  # 医疗
-    "写字楼": "120201"  # 写字楼
+    "公园": "110103",
+    "商圈": "180300",
+
 }
+# CANDIDATE_TYPES = {
+#     "购物中心": "060100",  # 购物相关
+# }
 # 类型距离映射配置
 POI_DISTANCE_RULES = {
-    # 取货点类型 (500km覆盖)
-    "餐饮服务": 500,  # 餐饮服务
-    "购物中心": 500,  # 购物中心
-    # 送货点类型 (2.5km覆盖)
-    "住宅区": 4000,  # 住宅区
-    "写字楼": 4000,  # 写字楼
+    # 取货点类型
+    "餐饮服务": 200,  # 餐饮服务
+    "商圈": 500,
+    #"购物中心": 500,  # 购物中心
+    # 送货点类型
+    "住宅区": 5000,  # 住宅区
+    "写字楼": 5000,  # 写字楼
+    "公园": 5000,
     # 其他默认
     "default": 2500
 }
 # 类型权重配置
 POI_WEIGHTS = {
-    "餐饮服务": 1.3,  # 餐饮高权重
-    "购物中心": 1.5,
+    "餐饮服务": 1.5,
+    "商圈": 2.0,
+    #"购物中心": 1.5,
     "住宅区": 1.0,
-    "写字楼": 1.0,
+    "写字楼": 1.5,
+    "公园": 1.5,
     "default": 0.8
 }
 # 点类型配置
@@ -68,7 +82,7 @@ POI_TYPE_ICONS = {
     "中心点": "star",
     #"周边点": "cloud"
 }
-
+MAX_PAGE = 15
 
 def get_circle_boundary(lat, lng, radius_km=15, points=36):
     """
@@ -96,26 +110,45 @@ def safe_normalize(data):
     if np.all(data == 0) or len(data) == 0:
         return np.zeros_like(data)
     return (data - np.min(data)) / (np.max(data) - np.min(data) + 1e-6)
-def generate_candidate_points(poi_df, n_clusters=10):
-    """通过K-Means聚类生成候选点位"""
-    coords = poi_df[['lng', 'lat']].values
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    kmeans.fit(coords)
-    # 返回聚类中心作为候选点
-    return kmeans.cluster_centers_
+# def generate_candidate_points(poi_df, n_clusters=10):
+#     """通过K-Means聚类生成候选点位"""
+#     coords = poi_df[['lng', 'lat']].values
+#     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+#     kmeans.fit(coords)
+#     # 返回聚类中心作为候选点
+#     return kmeans.cluster_centers_
 
-def calculate_kde_scores(poi_df, candidate_points):
+# def calculate_kde_scores(poi_df, candidate_points):
+def calculate_kde_scores(poi_df, candidate_df):
     """计算每个候选点的核密度得分"""
-    # 提取POI坐标和权重（商家权重=1.5，居民区=1.0）
-    poi_coords = poi_df[['lng', 'lat']].values.T  # (2, N)
-    weights = poi_df['type'].map({'餐饮服务': 1.3,"购物中心":1.5, '住宅区': 1.0, '写字楼': 1.0}).fillna(1.0).values
+    # # 提取POI坐标和权重（商家权重=1.5，居民区=1.0）
+    # poi_coords = poi_df[['lng', 'lat']].values.T  # (2, N)
+    # # weights = poi_df['type'].map({'餐饮服务': 1.3,"购物中心":1.5, '住宅区': 1.0, '写字楼': 1.0}).fillna(1.0).values
+    # # weights = poi_df['type'].map({"购物中心":1.5}).fillna(1.0).values
+    #
+    # # 计算带权重的KDE
+    # kde = gaussian_kde(poi_coords)
+    #
+    # # 评估候选点密度
+    # scores = kde.evaluate(candidate_points.T)  # candidate_points形状为(N, 2)
+    # return pd.DataFrame({'lng': candidate_points[:, 0], 'lat': candidate_points[:, 1], 'kde_score': scores})
+    """计算每个候选点的核密度得分"""
+    # 提取POI坐标（假设poi_df已经正确包含经纬度）
+    poi_coords = poi_df[['lng', 'lat']].values.T  # shape (2, N)
 
-    # 计算带权重的KDE
-    kde = gaussian_kde(poi_coords, weights=weights)
+    # 创建并拟合KDE模型
+    kde = gaussian_kde(poi_coords, bw_method='silverman')
 
-    # 评估候选点密度
-    scores = kde.evaluate(candidate_points.T)  # candidate_points形状为(N, 2)
-    return pd.DataFrame({'lng': candidate_points[:, 0], 'lat': candidate_points[:, 1], 'kde_score': scores})
+    # 提取候选点坐标，确保正确的shape为(N, 2)
+    candidate_coords = candidate_df[['lng', 'lat']].values  # (N, 2)
+
+    # 评估候选点的密度
+    scores = kde.evaluate(candidate_coords.T)  # 注意转置为 (2, N)
+
+    # 将分数添加到candidate_df
+    candidate_df['kde_score'] = scores
+
+    return candidate_df
 
 
 def calculate_geo_distance_matrix(candidates, pois):
@@ -196,6 +229,9 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
     # 不能直接返回DataFrame!
     return [
         {
+            "name":row['name'],
+            "type":row['type'],
+            "address":row['address'],
             "lat": row['lat'],
             "lng": row['lng'],
             "kde_score":row['kde_score'],
@@ -367,6 +403,7 @@ def get_combined_poi(api_key, location, radius, types=None):
     all_pois = []
     for type_code in types:
         page = 1
+        # st.write(type_code)
         while True:
             url = f"https://restapi.amap.com/v3/place/around?key={api_key}" \
                   f"&location={location}&radius={radius}&types={type_code}&offset=20&page={page}" # offset<=25
@@ -381,7 +418,7 @@ def get_combined_poi(api_key, location, radius, types=None):
                 page += 1
 
                 time.sleep(0.8)
-                if page > 30:  # 最多页数
+                if page > MAX_PAGE:  # 最多页数
                     break
             except Exception as e:
                 st.warning(f"获取{type_code}类型POI失败: {str(e)}")
@@ -394,6 +431,14 @@ if st.session_state.selected_point and st.button("获取周边POI数据"):
     radius = float(st.session_state.analysis_area.get("radius", 15.0)) * 1000  # 转换为米
 
     with st.spinner(f"正在获取半径{radius / 1000}km内的多类型POI数据..."):
+        # st.write(CANDIDATE_TYPES.values())
+        # st.write(POI_TYPES.values())
+        # candidate_pois = get_combined_poi(
+        #     st.secrets["AMAP_KEY"],
+        #     location,
+        #     radius,
+        #     types=list(CANDIDATE_TYPES.values())  # 获取所有类型
+        # )
         all_pois = get_combined_poi(
             st.secrets["AMAP_KEY"],
             location,
@@ -402,7 +447,9 @@ if st.session_state.selected_point and st.button("获取周边POI数据"):
         )
 
     # 处理数据
+    # all_poi
     processed_data = []
+    processed_candidate_data = []
     for poi in all_pois:
         try:
             lng, lat = map(float, poi["location"].split(","))
@@ -412,19 +459,31 @@ if st.session_state.selected_point and st.button("获取周边POI数据"):
             # 如果address是列表，转换为逗号分隔字符串
             if isinstance(poi["address"], list):
                 address = ", ".join(poi["address"])
-            processed_data.append({
-                "name": str(poi.get("name", "")),
-                "type": str(poi.get("poi_type", "其他")),
-                "address": address,
-                "lat": lat,
-                "lng": lng,
-                "distance": float(poi.get("distance", 0))
-            })
+            st.write(poi.get("poi_type"))
+            if poi['poi_type'] == "购物中心":
+                processed_candidate_data.append({
+                    "name": str(poi.get("name", "")),
+                    "type": str(poi.get("poi_type", "其他")),
+                    "address": address,
+                    "lat": lat,
+                    "lng": lng,
+                    "distance": float(poi.get("distance", 0))
+                })
+            else:
+                processed_data.append({
+                    "name": str(poi.get("name", "")),
+                    "type": str(poi.get("poi_type", "其他")),
+                    "address": address,
+                    "lat": lat,
+                    "lng": lng,
+                    "distance": float(poi.get("distance", 0))
+                })
         except Exception as e:
             st.error(f"解析POI数据失败：{str(e)}")
             continue
     # 创建DataFrame并清洗
     df = pd.DataFrame(processed_data)
+    st.write(df)
     # 二次清洗
     df = df[
         (df['lat'].notnull()) &
@@ -439,6 +498,24 @@ if st.session_state.selected_point and st.button("获取周边POI数据"):
         "distance": "float32"
     })
     st.session_state.poi_data = df
+    # 创建DataFrame并清洗
+    df = pd.DataFrame(processed_candidate_data)
+    st.write(df)
+    # 二次清洗
+    df = df[
+        (df['lat'].notnull()) &
+        (df['lng'].notnull())
+        ]
+    df = df.astype({
+        "name": "string",
+        "type": "category",
+        "address": "string",
+        "lat": "float32",
+        "lng": "float32",
+        "distance": "float32"
+    })
+    st.session_state.candidate_poi = df
+
 
 # 显示POI数据
 if st.session_state.poi_data is not None:
@@ -479,6 +556,7 @@ if st.session_state.poi_data is not None:
 
     with col1:
         st.metric("总POI数量", len(st.session_state.poi_data))
+        st.metric("总候选点数量", len(st.session_state.candidate_poi))
         st.metric("有效坐标数",
                   len(st.session_state.poi_data.dropna(subset=['lat', 'lng'])))
 
@@ -496,8 +574,10 @@ if st.session_state.poi_data is not None and st.button("开始优化选址"):
     with st.status("🚀 优化进程", state="running", expanded=True) as status:
         # 阶段1: 生成候选点
 
-        st.write("🧮 1/3 使用K-Means聚类识别高密度区域...生成候选点...")
-        candidate_points = generate_candidate_points(poi_df)  # 使用清洗后的数据
+        # st.write("🧮 1/3 使用K-Means聚类识别高密度区域...生成候选点...")
+        st.write("🧮 1/3 正在获取候选点...")
+        # candidate_points = generate_candidate_points(poi_df)  # 使用清洗后的数据
+        candidate_points = st.session_state.candidate_poi
         time.sleep(0.5)
 
         # 阶段2: 核密度估计
@@ -539,7 +619,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                             - "avg_distance": 周边poi平均距离
                             - "weighted_coverage": 加权poi覆盖度
                             - "nearest_pois": 周边主要poi
-                        - （算法: K-Means聚类+核密度估计+Pareto优化）
+                        - （算法: 核密度估计+Pareto优化）
                         ## 深度分析维度:  
                         1. 商业潜力对比（基于周边餐饮/购物中心密度）  
                         2. 交通可达性分析（道路网络+峰值时段）  
@@ -599,6 +679,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 [point["lat"], point["lng"]],
                 tooltip=f"""
                 <b>推荐点#{idx},<b><br>
+                "name": {point["name"]},<br>
                 "lat": {point["lat"]:.8f},<br>
                 "lng": {point["lng"]:.8f},<br>
                 "score":{point['score']:.6f},<br>
