@@ -350,10 +350,11 @@ with st.expander("🗺️ 第一步：选择中心点", expanded=True):
                 key="radius_selector"
             )
             # 半径调整
-            if new_radius != current_radius:
-                # 转换为float
-                st.session_state.analysis_area["radius"] = float(new_radius)
-                st.rerun()
+            # st.write(new_radius)
+            # if new_radius != current_radius:
+            #     # 转换为float
+            #     # st.session_state.analysis_area["radius"] = float(new_radius)
+            #     # st.rerun()
 
             st.write(f"当前半径: **{new_radius} km**")
             st.write(f"覆盖面积: **{math.pi * new_radius ** 2:.1f} km²**")
@@ -366,6 +367,7 @@ with st.expander("🗺️ 第一步：选择中心点", expanded=True):
 
             # 保存到session
             st.session_state.analysis_area = {
+                "radius": float(new_radius),
                 "center": [st.session_state.selected_point['lat'], st.session_state.selected_point['lng']],
                 "boundary": boundary
             }
