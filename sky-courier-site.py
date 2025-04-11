@@ -7,7 +7,6 @@ import folium
 from folium.plugins import Draw
 import math
 from folium.plugins import HeatMap
-from sklearn.cluster import KMeans
 from scipy.stats import gaussian_kde
 from geopy.distance import geodesic
 import time
@@ -18,25 +17,26 @@ st.set_page_config(layout="wide", page_title="无人机机场选址智能分析�
 st.title("🥡 无人机机场选址智能分析系统")
 
 # 初始化session状态
-if "selected_point" not in st.session_state:
+if "selected_point" not in st.session_state: # 选中的点
     st.session_state.selected_point = None
-if "analysis_area" not in st.session_state:
+if "analysis_area" not in st.session_state: # 选中的区域，包括半径等
     st.session_state.analysis_area = None
-if "poi_data" not in st.session_state:
+if "poi_data" not in st.session_state: # 获取的全部原始poi
     st.session_state.poi_data = None
-if "candidate_poi" not in st.session_state:
+if "candidate_poi" not in st.session_state: # 购物中心类型候选点原始poi
     st.session_state.candidate_poi = None
-if "analysis_result" not in st.session_state:
+if "analysis_result" not in st.session_state: # AI分析结果
     st.session_state.analysis_result = None
-if "pareto_candidates" not in st.session_state:
+if "pareto_candidates" not in st.session_state: # 选址优化分析结果
     st.session_state.pareto_candidates = None
 
 # 常量
 # API常量配置
 MIN_RADIUS_KM = 1.0  # 最小允许半径
+MAX_PAGE = 20 # 获取页数，每次api使用次数会*页数
 
 # POI类型配置
-# 每日api限额100次，每次花费和种类相同的次数，节省限额所以大部分先注释掉
+# 每日api限额，每次花费和种类相同的次数，节省限额所以大部分先注释掉
 POI_TYPES = {
     "购物中心": "060100",  # 购物相关
     "写字楼": "120201",  # 写字楼
@@ -50,9 +50,7 @@ POI_TYPES = {
     "商圈": "180300",
 
 }
-# CANDIDATE_TYPES = {
-#     "购物中心": "060100",  # 购物相关
-# }
+
 # 类型距离映射配置
 POI_DISTANCE_RULES = {
     # 取货点类型
@@ -82,7 +80,7 @@ POI_TYPE_ICONS = {
     "中心点": "star",
     #"周边点": "cloud"
 }
-MAX_PAGE = 15
+
 
 def get_circle_boundary(lat, lng, radius_km=15, points=36):
     """
@@ -110,41 +108,17 @@ def safe_normalize(data):
     if np.all(data == 0) or len(data) == 0:
         return np.zeros_like(data)
     return (data - np.min(data)) / (np.max(data) - np.min(data) + 1e-6)
-# def generate_candidate_points(poi_df, n_clusters=10):
-#     """通过K-Means聚类生成候选点位"""
-#     coords = poi_df[['lng', 'lat']].values
-#     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-#     kmeans.fit(coords)
-#     # 返回聚类中心作为候选点
-#     return kmeans.cluster_centers_
 
-# def calculate_kde_scores(poi_df, candidate_points):
 def calculate_kde_scores(poi_df, candidate_df):
     """计算每个候选点的核密度得分"""
-    # # 提取POI坐标和权重（商家权重=1.5，居民区=1.0）
-    # poi_coords = poi_df[['lng', 'lat']].values.T  # (2, N)
-    # # weights = poi_df['type'].map({'餐饮服务': 1.3,"购物中心":1.5, '住宅区': 1.0, '写字楼': 1.0}).fillna(1.0).values
-    # # weights = poi_df['type'].map({"购物中心":1.5}).fillna(1.0).values
-    #
-    # # 计算带权重的KDE
-    # kde = gaussian_kde(poi_coords)
-    #
-    # # 评估候选点密度
-    # scores = kde.evaluate(candidate_points.T)  # candidate_points形状为(N, 2)
-    # return pd.DataFrame({'lng': candidate_points[:, 0], 'lat': candidate_points[:, 1], 'kde_score': scores})
-    """计算每个候选点的核密度得分"""
-    # 提取POI坐标（假设poi_df已经正确包含经纬度）
+    # 提取POI坐标
     poi_coords = poi_df[['lng', 'lat']].values.T  # shape (2, N)
-
     # 创建并拟合KDE模型
     kde = gaussian_kde(poi_coords, bw_method='silverman')
-
-    # 提取候选点坐标，确保正确的shape为(N, 2)
+    # 提取候选点坐标
     candidate_coords = candidate_df[['lng', 'lat']].values  # (N, 2)
-
     # 评估候选点的密度
     scores = kde.evaluate(candidate_coords.T)  # 注意转置为 (2, N)
-
     # 将分数添加到candidate_df
     candidate_df['kde_score'] = scores
 
@@ -168,7 +142,7 @@ def calculate_geo_distance_matrix(candidates, pois):
     return distance_matrix
 
 def optimize_pareto_front(candidates, poi_df, top_n=3):
-    """动态距离阈值+加权覆盖的Pareto优化"""
+    """动态距离阈值+加权覆盖优化"""
     # 预处理
     candidates = candidates.dropna(subset=['lng', 'lat']).copy()
     poi_df = poi_df.dropna(subset=['lng', 'lat']).copy()
@@ -181,9 +155,6 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
     # st.write(poi_weights)
 
     # 计算距离矩阵
-    # candidate_coords = candidates[['lng', 'lat']].values
-    # poi_coords = poi_df[['lng', 'lat']].values
-    #distance_matrix = cdist(candidate_coords, poi_coords)  # 单位：米
     distance_matrix = calculate_geo_distance_matrix(candidates, poi_df)
     # st.write(distance_matrix)
     # 获取每个候选点最近的5个POI索引
@@ -350,11 +321,6 @@ with st.expander("🗺️ 第一步：选择中心点", expanded=True):
                 key="radius_selector"
             )
             # 半径调整
-            # st.write(new_radius)
-            # if new_radius != current_radius:
-            #     # 转换为float
-            #     # st.session_state.analysis_area["radius"] = float(new_radius)
-            #     # st.rerun()
 
             st.write(f"当前半径: **{new_radius} km**")
             st.write(f"覆盖面积: **{math.pi * new_radius ** 2:.1f} km²**")
@@ -405,7 +371,6 @@ def get_combined_poi(api_key, location, radius, types=None):
     all_pois = []
     for type_code in types:
         page = 1
-        # st.write(type_code)
         while True:
             url = f"https://restapi.amap.com/v3/place/around?key={api_key}" \
                   f"&location={location}&radius={radius}&types={type_code}&offset=20&page={page}" # offset<=25
@@ -433,14 +398,6 @@ if st.session_state.selected_point and st.button("获取周边POI数据"):
     radius = float(st.session_state.analysis_area.get("radius", 15.0)) * 1000  # 转换为米
 
     with st.spinner(f"正在获取半径{radius / 1000}km内的多类型POI数据..."):
-        # st.write(CANDIDATE_TYPES.values())
-        # st.write(POI_TYPES.values())
-        # candidate_pois = get_combined_poi(
-        #     st.secrets["AMAP_KEY"],
-        #     location,
-        #     radius,
-        #     types=list(CANDIDATE_TYPES.values())  # 获取所有类型
-        # )
         all_pois = get_combined_poi(
             st.secrets["AMAP_KEY"],
             location,
@@ -575,10 +532,7 @@ if st.session_state.poi_data is not None and st.button("开始优化选址"):
     # 进度管理
     with st.status("🚀 优化进程", state="running", expanded=True) as status:
         # 阶段1: 生成候选点
-
-        # st.write("🧮 1/3 使用K-Means聚类识别高密度区域...生成候选点...")
         st.write("🧮 1/3 正在获取候选点...")
-        # candidate_points = generate_candidate_points(poi_df)  # 使用清洗后的数据
         candidate_points = st.session_state.candidate_poi
         time.sleep(0.5)
 
