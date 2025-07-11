@@ -7,7 +7,7 @@ __pycache__/
 *.so
 # Streamlit 相关
 .streamlit/
-secrets.toml
+.streamlit/secrets.toml
 
 # IntelliJ IDEA 特定文件
 .idea/

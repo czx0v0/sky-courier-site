@@ -17,23 +17,23 @@ st.set_page_config(layout="wide", page_title="无人机机场选址智能分析�
 st.title("🥡 无人机机场选址智能分析系统")
 
 # 初始化session状态
-if "selected_point" not in st.session_state: # 选中的点
+if "selected_point" not in st.session_state:  # 选中的点
     st.session_state.selected_point = None
-if "analysis_area" not in st.session_state: # 选中的区域，包括半径等
+if "analysis_area" not in st.session_state:  # 选中的区域，包括半径等
     st.session_state.analysis_area = None
-if "poi_data" not in st.session_state: # 获取的全部原始poi
+if "poi_data" not in st.session_state:  # 获取的全部原始poi
     st.session_state.poi_data = None
-if "candidate_poi" not in st.session_state: # 购物中心类型候选点原始poi
+if "candidate_poi" not in st.session_state:  # 购物中心类型候选点原始poi
     st.session_state.candidate_poi = None
-if "analysis_result" not in st.session_state: # AI分析结果
+if "analysis_result" not in st.session_state:  # AI分析结果
     st.session_state.analysis_result = None
-if "pareto_candidates" not in st.session_state: # 选址优化分析结果
+if "pareto_candidates" not in st.session_state:  # 选址优化分析结果
     st.session_state.pareto_candidates = None
 
 # 常量
 # API常量配置
 MIN_RADIUS_KM = 1.0  # 最小允许半径
-MAX_PAGE = 20 # 获取页数，每次api使用次数会*页数
+MAX_PAGE = 20  # 获取页数，每次api使用次数会*页数
 
 # POI类型配置
 # 每日api限额，每次花费和种类相同的次数，节省限额所以大部分先注释掉
@@ -41,11 +41,11 @@ POI_TYPES = {
     "购物中心": "060100",  # 购物相关
     "写字楼": "120201",  # 写字楼
     "住宅区": "120000",  # 居住区
-    #"商务楼宇": "120200",  # 商务住宅
+    # "商务楼宇": "120200",  # 商务住宅
     "餐饮服务": "050000",  # 餐饮
-    #"学校": "141200",  # 教育
-    #"交通枢纽": "150000",  # 交通设施
-    #"医院": "090000",  # 医疗
+    # "学校": "141200",  # 教育
+    # "交通枢纽": "150000",  # 交通设施
+    # "医院": "090000",  # 医疗
     "公园": "110103",
     "商圈": "180300",
 
@@ -56,7 +56,7 @@ POI_DISTANCE_RULES = {
     # 取货点类型
     "餐饮服务": 200,  # 餐饮服务
     "商圈": 500,
-    #"购物中心": 500,  # 购物中心
+    # "购物中心": 500,  # 购物中心
     # 送货点类型
     "住宅区": 5000,  # 住宅区
     "写字楼": 5000,  # 写字楼
@@ -68,7 +68,7 @@ POI_DISTANCE_RULES = {
 POI_WEIGHTS = {
     "餐饮服务": 1.5,
     "商圈": 2.0,
-    #"购物中心": 1.5,
+    # "购物中心": 1.5,
     "住宅区": 1.0,
     "写字楼": 1.5,
     "公园": 1.5,
@@ -78,7 +78,7 @@ POI_WEIGHTS = {
 POI_TYPE_ICONS = {
     "推荐点": "flag",
     "中心点": "star",
-    #"周边点": "cloud"
+    # "周边点": "cloud"
 }
 
 
@@ -102,12 +102,14 @@ def get_circle_boundary(lat, lng, radius_km=15, points=36):
         boundary.append([lat + dy, lng + dx])
     return boundary
 
+
 def safe_normalize(data):
     """防御性标准化（处理全零值）"""
     data = np.asarray(data)
     if np.all(data == 0) or len(data) == 0:
         return np.zeros_like(data)
     return (data - np.min(data)) / (np.max(data) - np.min(data) + 1e-6)
+
 
 def calculate_kde_scores(poi_df, candidate_df):
     """计算每个候选点的核密度得分"""
@@ -140,6 +142,7 @@ def calculate_geo_distance_matrix(candidates, pois):
             distance_matrix[i][j] = geodesic(c_point, p_point).meters
 
     return distance_matrix
+
 
 def optimize_pareto_front(candidates, poi_df, top_n=3):
     """动态距离阈值+加权覆盖优化"""
@@ -200,22 +203,24 @@ def optimize_pareto_front(candidates, poi_df, top_n=3):
     # 不能直接返回DataFrame!
     return [
         {
-            "name":row['name'],
-            "type":row['type'],
-            "address":row['address'],
+            "name": row['name'],
+            "type": row['type'],
+            "address": row['address'],
             "lat": row['lat'],
             "lng": row['lng'],
-            "kde_score":row['kde_score'],
-            "weighted_coverage":row['weighted_coverage'],
-            "avg_distance":row['avg_distance'],
-            "score":row['score'],
+            "kde_score": row['kde_score'],
+            "weighted_coverage": row['weighted_coverage'],
+            "avg_distance": row['avg_distance'],
+            "score": row['score'],
             "nearest_pois": [
-                {k:v for k,v in p.items() if k in ['name','type','lat','lng','distance']}
+                {k: v for k, v in p.items() if k in ['name', 'type', 'lat', 'lng', 'distance']}
                 for p in poi_df.iloc[nearest_indices[i]].to_dict('records')
             ]
         }
         for i, row in result_df.iterrows()
     ]
+
+
 # 1. 地图交互模块
 with st.expander("🗺️ 第一步：选择中心点", expanded=True):
     col_map, col_info = st.columns([3, 1])
@@ -296,7 +301,6 @@ with st.expander("🗺️ 第一步：选择中心点", expanded=True):
                     "lng": st.session_state.analysis_area["center"][1]
                 }
 
-
     with col_info:
         st.subheader("选择信息")
         if st.session_state.selected_point:
@@ -341,6 +345,7 @@ with st.expander("🗺️ 第一步：选择中心点", expanded=True):
         else:
             st.warning("请在地图上点击选择中心点")
 
+
 def get_coordinates(poi_df):
     """统一处理不同格式的位置数据"""
     coordinates = []
@@ -362,6 +367,7 @@ def get_coordinates(poi_df):
             st.warning(f"跳过无效位置数据: {row}")
     return coordinates
 
+
 # 缓存装饰器减少API调用
 @st.cache_data(ttl=3600, show_spinner="正在获取POI数据...")
 def get_combined_poi(api_key, location, radius, types=None):
@@ -373,7 +379,7 @@ def get_combined_poi(api_key, location, radius, types=None):
         page = 1
         while True:
             url = f"https://restapi.amap.com/v3/place/around?key={api_key}" \
-                  f"&location={location}&radius={radius}&types={type_code}&offset=20&page={page}" # offset<=25
+                  f"&location={location}&radius={radius}&types={type_code}&offset=20&page={page}"  # offset<=25
             try:
                 response = requests.get(url, timeout=50)
                 data = response.json()
@@ -391,6 +397,7 @@ def get_combined_poi(api_key, location, radius, types=None):
                 st.warning(f"获取{type_code}类型POI失败: {str(e)}")
         st.write(f'{type_code}获取完成')
     return all_pois
+
 
 # 在点击获取POI按钮时调用
 if st.session_state.selected_point and st.button("获取周边POI数据"):
@@ -475,7 +482,6 @@ if st.session_state.selected_point and st.button("获取周边POI数据"):
     })
     st.session_state.candidate_poi = df
 
-
 # 显示POI数据
 if st.session_state.poi_data is not None:
     with st.expander("📊 POI数据预览"):
@@ -543,7 +549,7 @@ if st.session_state.poi_data is not None and st.button("开始优化选址"):
 
         # 阶段3: 多目标优化
         st.write("💻 3/3 Pareto前沿筛选最优解...Pareto优化...")
-        pareto_candidates = optimize_pareto_front(kde_scores, poi_df,top_n = 5)
+        pareto_candidates = optimize_pareto_front(kde_scores, poi_df, top_n=5)
         time.sleep(0.5)
 
         status.update(label="✅ 优化完成", state="complete")
@@ -559,9 +565,10 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
         try:
             # 数据准备
             # st.write(st.session_state.pareto_candidates)
-            points = [{"lat": p["lat"], "lng": p["lng"],"score":p['score'],
-                                "kde_score":p['kde_score'],"avg_distance":p['avg_distance'],
-                                "weighted_coverage":p['weighted_coverage'],"nearest_pois":p['nearest_pois']} for p in st.session_state.pareto_candidates]
+            points = [{"lat": p["lat"], "lng": p["lng"], "score": p['score'],
+                       "kde_score": p['kde_score'], "avg_distance": p['avg_distance'],
+                       "weighted_coverage": p['weighted_coverage'], "nearest_pois": p['nearest_pois']} for p in
+                      st.session_state.pareto_candidates]
             # 构造专业prompt模板
             prompt = f"""
                         ## 角色定义：
@@ -600,7 +607,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 "https://api.deepseek.com/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=(30,50)
+                timeout=(30, 50)
             )
             # 结果可视化
             if response.status_code == 200:
@@ -643,7 +650,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 "avg_distance":{point['avg_distance']:.6f},<br>
                 "weighted_coverage":{point['weighted_coverage']:.6f},
                 """,
-                icon = folium.Icon(
+                icon=folium.Icon(
                     icon=POI_TYPE_ICONS['推荐点'],
                     color="green",
                     angle=45
@@ -654,7 +661,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
             for poi in point['nearest_pois']:
                 folium.Marker(
                     [poi['lat'], poi['lng']],
-                    popup=poi["name"], # 点击查看
+                    popup=poi["name"],  # 点击查看
                     icon=folium.DivIcon(
                         icon_size=(15, 15),
                         icon_anchor=(10, 10),
@@ -664,7 +671,7 @@ if st.session_state.poi_data is not None and st.button("进行智能分析"):
                 folium.PolyLine(
                     locations=[[point['lat'], point['lng']], [poi['lat'], poi['lng']]],
                     color="black",
-                    weight = 2,
+                    weight=2,
                     dash_array="5,3"
                 ).add_to(m)
 
